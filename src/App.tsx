@@ -1,12 +1,15 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
   explainRange,
   fetchChart,
+  fetchNewsForMoves,
   fetchResolution,
   RANGES,
-  type Candle,
   type ChartData,
+  type Candle,
+  type DetailSegment,
   type ExplainResult,
+  type NewsMarker,
   type Quote,
   type RangeKey,
   type ResolutionInterval,
@@ -34,8 +37,6 @@ type Status = 'loading' | 'ready' | 'error';
 
 type ExplainState = { status: 'idle' } | { status: 'loading' } | { status: 'error'; error: string } | { status: 'ready'; result: ExplainResult };
 
-type DetailSegment = { from: number; to: number; candles: Candle[] };
-
 function formatDate(seconds: number): string {
   return new Date(seconds * 1000).toLocaleDateString([], {
     month: 'short',
@@ -52,19 +53,53 @@ function fmtVolume(volume: number): string {
 }
 
 const PCT_TOKEN = /([+\-−‐‑]?\s*\d+(?:\.\d+)?\s*%)/g;
+const DIR_TOKEN = /__[^_]*\d+(?:\.\d+)?\s*%[^_]*__|--[^\-]*\d+(?:\.\d+)?\s*%[^\-]*--/g;
 
-function colorizePercents(text: string): React.ReactNode[] {
+function colorizeSigns(text: string): React.ReactNode[] {
   return text.split(PCT_TOKEN).map((part, idx) => {
     if (!part) return null;
     const m = /^\s*([+\-−‐‑]?)\s*(\d+(?:\.\d+)?)\s*%$/.exec(part);
     if (!m) return <Fragment key={idx}>{part}</Fragment>;
-    const negative = m[1] === '-' || m[1] === '−' || m[1] === '‐' || m[1] === '‑';
+    const sign = m[1];
+    if (!sign) return <Fragment key={idx}>{part}</Fragment>;
+    const negative = sign === '-' || sign === '−' || sign === '‐' || sign === '‑';
     return (
       <span key={idx} className={negative ? 'down' : 'up'}>
         {part}
       </span>
     );
   });
+}
+
+function colorizePercents(text: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let key = 0;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  DIR_TOKEN.lastIndex = 0;
+  while ((m = DIR_TOKEN.exec(text))) {
+    const before = text.slice(last, m.index);
+    if (before) out.push(<Fragment key={key++}>{colorizeSigns(before)}</Fragment>);
+    const tok = m[0];
+    if (tok.startsWith('--')) {
+      out.push(
+        <span key={key++} className="down">
+          {tok.slice(2, -2)}
+        </span>,
+      );
+    } else {
+      out.push(
+        <span key={key++} className="up">
+          {tok.slice(2, -2)}
+        </span>,
+      );
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) {
+    out.push(<Fragment key={key++}>{colorizeSigns(text.slice(last))}</Fragment>);
+  }
+  return out;
 }
 
 function renderInline(text: string): React.ReactNode[] {
@@ -76,26 +111,166 @@ function renderInline(text: string): React.ReactNode[] {
     if (part.startsWith('**') && part.endsWith('**')) {
       out.push(<strong key={idx}>{colorizePercents(part.slice(2, -2))}</strong>);
     } else {
-      out.push(...colorizePercents(part));
+      out.push(<Fragment key={idx}>{colorizePercents(part)}</Fragment>);
     }
   }
   return out;
 }
 
+function findBiggestMoves(candles: Candle[], range: RangeKey): { from: number; to: number }[] {
+  if (candles.length < 2) return [];
+
+  const moves: { from: number; to: number; pct: number; type: 'day' | 'week' }[] = [];
+
+  // 1-day moves
+  for (let i = 1; i < candles.length; i++) {
+    const prev = candles[i - 1];
+    const curr = candles[i];
+    const pct = ((curr.close - prev.close) / prev.close) * 100;
+    if (Math.abs(pct) >= 3) {
+      moves.push({ from: prev.time, to: curr.time, pct, type: 'day' });
+    }
+  }
+
+  // 5-day (week) moves
+  for (let i = 5; i < candles.length; i++) {
+    const prev = candles[i - 5];
+    const curr = candles[i];
+    const pct = ((curr.close - prev.close) / prev.close) * 100;
+    if (Math.abs(pct) >= 5) {
+      moves.push({ from: prev.time, to: curr.time, pct, type: 'week' });
+    }
+  }
+
+  moves.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+
+  if (range !== 'MAX') {
+    let minTotal: number;
+    if (range === '1Y') minTotal = 3;
+    else if (range === '5Y') minTotal = 5;
+    else minTotal = 3;
+
+    const byYear = new Map<number, { from: number; to: number; pct: number; type: 'day' | 'week' }>();
+    for (const m of moves) {
+      const year = new Date(m.from * 1000).getUTCFullYear();
+      const existing = byYear.get(year);
+      if (!existing || Math.abs(m.pct) > Math.abs(existing.pct)) {
+        byYear.set(year, m);
+      }
+    }
+
+    const selectedYears = Array.from(byYear.keys()).sort((a, b) => a - b);
+    const firstYear = selectedYears[0] ?? new Date().getUTCFullYear();
+    const lastYear = selectedYears[selectedYears.length - 1] ?? firstYear;
+
+    const yearBlocks: number[] = [];
+    for (let y = firstYear; y <= lastYear; y++) {
+      yearBlocks.push(y);
+    }
+
+    const selectedMoves: { from: number; to: number; pct: number; type: 'day' | 'week' }[] = [];
+    for (const blockStart of yearBlocks) {
+      let bestInBlock: typeof moves[0] | null = null;
+      for (const m of moves) {
+        const year = new Date(m.from * 1000).getUTCFullYear();
+        if (year === blockStart) {
+          if (!bestInBlock || Math.abs(m.pct) > Math.abs(bestInBlock.pct)) {
+            bestInBlock = m;
+          }
+        }
+      }
+      if (bestInBlock) selectedMoves.push(bestInBlock);
+    }
+
+    if (selectedMoves.length < minTotal) {
+      for (const m of moves) {
+        if (!selectedMoves.some(s => s.from === m.from)) {
+          selectedMoves.push(m);
+          if (selectedMoves.length >= minTotal) break;
+        }
+      }
+    }
+
+    const selected = selectedMoves
+      .sort((a, b) => a.from - b.from)
+      .slice(0, 10);
+
+    return selected.map((m) => ({
+      from: m.from - 2 * 86400,
+      to: m.to + 2 * 86400,
+    }));
+  }
+
+// MAX range: exactly one biggest move per 5-year block
+  const firstTime = candles[0].time;
+  const lastTime = candles[candles.length - 1].time;
+  const firstYear = new Date(firstTime * 1000).getUTCFullYear();
+  const lastYear = new Date(lastTime * 1000).getUTCFullYear();
+
+  // Build 5-year blocks covering entire data range
+  const fiveYearBlocks: number[] = [];
+  for (let y = firstYear; y <= lastYear; y += 5) {
+    fiveYearBlocks.push(y);
+  }
+
+  // Pick the single biggest move from each block
+  const selected: typeof moves = [];
+
+  for (const blockStart of fiveYearBlocks) {
+    const blockEnd = Math.min(blockStart + 4, lastYear);
+    let bestInBlock: typeof moves[0] | null = null;
+    for (const m of moves) {
+      const year = new Date(m.from * 1000).getUTCFullYear();
+      if (year >= blockStart && year <= blockEnd) {
+        if (!bestInBlock || Math.abs(m.pct) > Math.abs(bestInBlock.pct)) {
+          bestInBlock = m;
+        }
+      }
+    }
+    if (bestInBlock) {
+      console.log('[MAX] Block', blockStart, '-', blockEnd, 'selected:', bestInBlock.from, 'year:', new Date(bestInBlock.from * 1000).getUTCFullYear(), 'pct:', bestInBlock.pct);
+      selected.push(bestInBlock);
+    }
+  }
+
+  // Sort by magnitude (biggest first), cap at 10 for UI
+  const final = selected
+    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))
+    .slice(0, 10);
+
+  return final.map((m) => ({
+    from: m.from - 2 * 86400,
+    to: m.to + 2 * 86400,
+  }));
+}
+
 function renderAnalysis(text: string) {
-  const blocks: { type: 'p' | 'li'; text: string }[] = [];
+  const blocks: { type: 'p' | 'li' | 'h3' | 'h4'; text: string }[] = [];
   for (const line of text.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
+    const h = /^(#{1,2})\s+(.*)$/.exec(trimmed);
+    if (h) {
+      blocks.push({ type: h[1].length === 1 ? 'h3' : 'h4', text: h[2] });
+      continue;
+    }
     if (/^[-*•]\s+/.test(trimmed)) {
       blocks.push({ type: 'li', text: trimmed.replace(/^[-*•]\s+/, '') });
     } else {
       blocks.push({ type: 'p', text: trimmed });
     }
   }
-  return blocks.map((b, i) =>
-    b.type === 'li' ? <li key={i}>{renderInline(b.text)}</li> : <p key={i}>{renderInline(b.text)}</p>,
-  );
+  return blocks.map((b, i) => {
+    if (b.type === 'li') return <li key={i}>{renderInline(b.text)}</li>;
+    if (b.type === 'h3')
+      return (
+        <h3 key={i} className="analysis-headline">
+          {renderInline(b.text)}
+        </h3>
+      );
+    if (b.type === 'h4') return <h4 key={i}>{renderInline(b.text)}</h4>;
+    return <p key={i}>{renderInline(b.text)}</p>;
+  });
 }
 
 export function App() {
@@ -108,10 +283,11 @@ export function App() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(null);
   const [explain, setExplain] = useState<ExplainState>({ status: 'idle' });
+  const [explainQuestion, setExplainQuestion] = useState<string>('');
   const [segments, setSegments] = useState<DetailSegment[]>([]);
-  const [preserveView, setPreserveView] = useState(false);
   const [resolving, setResolving] = useState(false);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [newsMarkers, setNewsMarkers] = useState<NewsMarker[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -120,7 +296,6 @@ export function App() {
     setSelection(null);
     setExplain({ status: 'idle' });
     setSegments([]);
-    setPreserveView(false);
     setResolving(false);
     setResolutionError(null);
     fetchChart(quote, range)
@@ -128,6 +303,24 @@ export function App() {
         if (cancelled) return;
         setData(res);
         setStatus('ready');
+        const moves = findBiggestMoves(res.candles, range);
+        if (moves.length > 0) {
+          console.log('[news] found moves:', moves.length, moves);
+          fetchNewsForMoves(quote.seg, quote.path, quote.symbol, quote.name, moves)
+            .then((newsByRange) => {
+              if (cancelled) return;
+              console.log('[news] response:', newsByRange);
+              const markers: NewsMarker[] = newsByRange
+                .filter((nr) => nr.news.length > 0)
+                .map((nr) => ({
+                  time: Math.floor((nr.range.from + nr.range.to) / 2),
+                  news: nr.news,
+                }));
+              console.log('[news] markers:', markers);
+              setNewsMarkers(markers);
+            })
+            .catch((err) => console.error('[news] fetch failed:', err));
+        }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -157,12 +350,14 @@ export function App() {
         name: quote.name,
         from: selection.from,
         to: selection.to,
+        question: explainQuestion,
       });
       setExplain({ status: 'ready', result });
+      setExplainQuestion('');
     } catch (err) {
       setExplain({ status: 'error', error: err instanceof Error ? err.message : 'Request failed' });
     }
-  }, [selection, status, quote]);
+  }, [selection, status, quote, explainQuestion]);
 
   const clearSelection = useCallback(() => {
     setSelection(null);
@@ -175,8 +370,7 @@ export function App() {
       setResolutionError(null);
       try {
         const res = await fetchResolution(quote, from, to, interval);
-        setSegments((prev) => [...prev, { from, to, candles: res.candles }]);
-        setPreserveView(true);
+        setSegments((prev) => [...prev, { from, to, candles: res.candles, interval }]);
       } catch (err) {
         setResolutionError(err instanceof Error ? err.message : 'Failed to load finer data');
       } finally {
@@ -185,28 +379,6 @@ export function App() {
     },
     [quote],
   );
-
-  const activeCandles = useMemo(() => {
-    const base = data?.candles;
-    if (!base) return [];
-    if (segments.length === 0) return base;
-    const detail = new Map<number, Candle>();
-    for (const s of segments) {
-      for (const t of Array.from(detail.keys())) {
-        if (t >= s.from && t <= s.to) detail.delete(t);
-      }
-      for (const c of s.candles) detail.set(c.time, c);
-    }
-    const merged: Candle[] = [];
-    for (const c of base) {
-      if (detail.has(c.time)) continue;
-      if (segments.some((s) => c.time >= s.from && c.time <= s.to)) continue;
-      merged.push(c);
-    }
-    for (const c of detail.values()) merged.push(c);
-    merged.sort((a, b) => a.time - b.time);
-    return merged;
-  }, [data, segments]);
 
   const up = data ? data.change >= 0 : true;
   const marketLabel = data ? MARKET_STATE[data.marketState] : '';
@@ -281,7 +453,7 @@ export function App() {
                   onClick={() => setSelectionMode((m) => !m)}
                   aria-pressed={selectionMode}
                 >
-                  Select period
+                  Analyse period
                 </button>
               </div>
             </div>
@@ -294,6 +466,14 @@ export function App() {
                   <span className="selection-range">
                     {formatDate(selection.from)} → {formatDate(selection.to)}
                   </span>
+                  <input
+                    type="text"
+                    className="explain-question"
+                    placeholder="Ask a question about this period…"
+                    value={explainQuestion}
+                    onChange={(e) => setExplainQuestion(e.target.value)}
+                    disabled={explain.status === 'loading'}
+                  />
                   <button
                     className="explain-btn"
                     onClick={runExplain}
@@ -306,7 +486,7 @@ export function App() {
                   </button>
                 </>
               ) : (
-                <span className="hint">Drag across the chart to highlight a period.</span>
+                <span className="hint">Drag across the chart to highlight a period for AI analysis.</span>
               )}
               <button
                 className="ghost-btn mode-off"
@@ -343,17 +523,18 @@ export function App() {
               </div>
             )}
 
-            {status === 'ready' && data && activeCandles.length > 0 && (
+            {status === 'ready' && data && data.candles.length > 0 && (
               <StockChart
-                candles={activeCandles}
+                candles={data.candles}
+                segments={segments}
                 chartType={chartType}
                 selectionMode={selectionMode}
                 selection={selection}
                 onSelectRange={handleSelectRange}
                 onRequestResolution={requestResolution}
-                preserveView={preserveView}
                 resolutionLoading={resolving}
                 resolutionError={resolutionError}
+                newsMarkers={newsMarkers}
               />
             )}
           </div>

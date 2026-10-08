@@ -41,6 +41,7 @@ type ExplainRequest = {
   name: string;
   from: number;
   to: number;
+  question?: string;
 };
 
 type NewsItem = { title: string; date: string; source: string };
@@ -198,29 +199,99 @@ function isoDate(seconds: number): string {
 }
 
 async function fetchNews(name: string, symbol: string, from: number, to: number): Promise<NewsItem[]> {
-  const query = `${symbol} ${name} after:${isoDate(from)} before:${isoDate(to + DAY)}`;
-  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(
-    query,
-  )}&hl=en-US&gl=US&ceid=US:en`;
-  const response = await fetch(url, { headers: SA_HEADERS });
-  if (!response.ok) throw new Error(`News feed responded with ${response.status}`);
-  const xml = await response.text();
-
-  const items: NewsItem[] = [];
+  const start = from - 2 * DAY;
+  const end = to + 2 * DAY;
+  const queries = [
+    `${symbol} ${name}`,
+    `${name}`,
+    `${symbol}`,
+  ];
   const seen = new Set<string>();
-  for (const block of xml.match(/<item>[\s\S]*?<\/item>/g) ?? []) {
-    const title = /<title>([\s\S]*?)<\/title>/.exec(block)?.[1]?.trim();
-    const pubDate = /<pubDate>([\s\S]*?)<\/pubDate>/.exec(block)?.[1]?.trim();
-    const source = /<source[^>]*>([\s\S]*?)<\/source>/.exec(block)?.[1]?.trim();
-    if (!title || seen.has(title)) continue;
-    seen.add(title);
-    const parsed = pubDate ? Math.floor(new Date(pubDate).getTime() / 1000) : null;
-    items.push({
-      title: title.replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"'),
-      date: parsed ? isoDate(parsed) : '',
-      source: source || '',
-    });
-    if (items.length >= 25) break;
+  const items: NewsItem[] = [];
+
+  // Patterns for low-quality aggregator/listicle headlines
+  const junkPatterns = [
+    /in today'?s? top stories related to/i,
+    /top \d+ stories/i,
+    /related to .*\([A-Z]{1,5}\)/i,
+    /^the \w+ times?in/i,
+    /^\w+ in today'?s?/i,
+    /^\w+\s+\([A-Z]{1,5}\)$/,
+    /^top headlines/i,
+    /daily (brief|summary|roundup)/i,
+    /^\w+\s*[-–—]\s*\w+$/, // "Title - Source" with no real content
+    /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+[A-Z][a-z]+.*[-–—]\s*[A-Z][a-z]+/, // "Source Title - Source" duplication
+  ];
+
+  // Known financial news sources - headlines ending with these are often just platform links
+  const knownSources = [
+    'Yahoo Finance', 'Bloomberg', 'Reuters', 'CNBC', 'MarketWatch',
+    'Seeking Alpha', 'Investopedia', 'Business Insider', 'Fox Business',
+    "Barron's", 'The Wall Street Journal', 'The New York Times',
+    'Financial Times', 'CNN Business', 'Fortune', 'Forbes',
+    'Morningstar', 'Zacks', 'TipRanks', 'Benzinga', 'The Motley Fool',
+    'The Street', 'Real Money', 'ValueWalk', '24/7 Wall St'
+  ];
+
+  function isJunk(title: string): boolean {
+    const t = title.trim();
+    if (t.length < 20) return true; // too short
+    if (!/[a-z]/.test(t)) return true; // no lowercase = likely all caps junk
+
+    // Check for "Title - Source" where source is a known financial platform
+    const dashParts = t.split(/[-–—]/).map(s => s.trim());
+    if (dashParts.length >= 2) {
+      const lastPart = dashParts[dashParts.length - 1];
+      // If last part is a known source, it's likely just a platform link
+      for (const src of knownSources) {
+        if (new RegExp(`^${src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i').test(lastPart)) {
+          // Also check if the first part mentions the same source (duplication)
+          const firstPart = dashParts[0];
+          if (new RegExp(src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(firstPart)) {
+            return true; // "Source ... - Source" duplication
+          }
+          // Or if first part is very short/generic
+          if (firstPart.length < 30) return true; // "Apple - Yahoo Finance"
+          return true; // "Some Title - Yahoo Finance" = likely just a link
+        }
+      }
+    }
+
+    // Check for source duplication in title (e.g., "Yahoo Finance... - Yahoo Finance")
+    for (const src of knownSources) {
+      const escaped = src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`^${escaped}[\\s\\S]*[-–—]\\s*${escaped}$`, 'i').test(t)) {
+        return true; // "Source ... - Source" duplication
+      }
+    }
+
+    for (const re of junkPatterns) {
+      if (re.test(t)) return true;
+    }
+    return false;
+  }
+
+  for (const query of queries) {
+    const q = `${query} after:${isoDate(start)} before:${isoDate(end + DAY)}`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=en-US&gl=US&ceid=US:en`;
+    const response = await fetch(url, { headers: SA_HEADERS });
+    if (!response.ok) continue;
+    const xml = await response.text();
+    for (const block of xml.match(/<item>[\s\S]*?<\/item>/g) ?? []) {
+      const title = /<title>([\s\S]*?)<\/title>/.exec(block)?.[1]?.trim();
+      const pubDate = /<pubDate>([\s\S]*?)<\/pubDate>/.exec(block)?.[1]?.trim();
+      const source = /<source[^>]*>([\s\S]*?)<\/source>/.exec(block)?.[1]?.trim();
+      if (!title || seen.has(title) || isJunk(title)) continue;
+      seen.add(title);
+      const parsed = pubDate ? Math.floor(new Date(pubDate).getTime() / 1000) : null;
+      items.push({
+        title: title.replace(/&/g, '&').replace(/'/g, "'").replace(/"/g, '"'),
+        date: parsed ? isoDate(parsed) : '',
+        source: source || '',
+      });
+      if (items.length >= 30) break;
+    }
+    if (items.length >= 30) break;
   }
   return items;
 }
@@ -331,6 +402,7 @@ function buildPrompt(
   news: NewsItem[],
   period: string,
 ): string {
+  const question = req.question?.trim();
   const fmt = (n: number) => n.toFixed(2);
   const unit = period === 'Daily' ? 'day' : period === 'Weekly' ? 'week' : 'month';
   const volLines = [
@@ -370,6 +442,7 @@ function buildPrompt(
           .map((n) => `- ${n.date}${n.source ? ` (${n.source})` : ''}: ${n.title}`)
           .join('\n')}`
       : 'No news headlines were found for this period in the available feed.',
+    question ? `\nUser question: ${question}` : '',
     '',
     'Focus on WHY the stock moved as it did: lead with the drivers and causes, and only briefly refer to the price action itself.',
   ];
@@ -377,42 +450,122 @@ function buildPrompt(
 }
 
 const SYSTEM_PROMPT = `You are a markets analyst explaining a highlighted period of a stock chart to a retail investor.
-Rules:
+
+OUTPUT STRUCTURE:
+1. Headline title — one markdown H1 line that names the stock, the direction of the move, and the main driver, in plain English. Example: "# Apple stock falls on pandemic worries". Exactly one line, no trailing period.
+2. Body made mostly of bullet points (3-6), one bullet per distinct driver or move phase. Use short paragraphs only where a bullet does not fit.
+
+RULES:
 - Explain WHY more than WHAT: keep recital of raw price moves brief and secondary. Spend most of the answer on the CAUSES — the events, catalysts, and market backdrops that drove the move, tied to specific dates.
+- If the period contains MULTIPLE moves, especially in different directions (up AND down at different times), cover EACH move in its OWN bullet point or paragraph, with its own dates, its own approximate size, and its own cause.
+- Break the drivers into separate bullet points rather than merging them — the more distinct the reason, the more distinct the bullet.
 - When the cause is not visible in the headlines, say the data does not show a single cause and give the most plausible data-supported explanations (e.g. momentum, mean reversion, sector rotation).
 - Use ONLY the price data and headlines provided. Never invent events, earnings dates, or figures.
 - Attribute moves to headlines only when the timing clearly lines up.
 - Consider volume where it is notable: volume far above the period or prior average confirms a move's conviction; mention it only when it stands out, tied to a specific date.
-- Plain language, 140-240 words. Start with one sentence summarizing the move, then explain WHY it happened.
-- No investment advice, no predictions, no price targets.
-- Formatting: wrap key dates, figures, and phrases in **bold** (2-4 per paragraph) and wrap percentages like **+64%** the same way. No preamble, no header, no closing remarks — return the explanation body only.`;
 
-async function callGroq(env: Record<string, string>, userPrompt: string): Promise<string> {
-  const key = env.GROQ_API_KEY;
-  if (!key) throw new Error('GROQ_API_KEY is not set in .env');
+MACRO EVENT EXCEPTION (narrow, verifiable only):
+- You MAY reference a major, widely documented public event (e.g., US presidential election, FOMC rate decision, pandemic lockdown, war outbreak) WITHOUT a provided headline ONLY IF:
+  a) The event has a single, universally known calendar date.
+  b) The price move in the data lines up with that date (within ~5 trading days).
+  c) The event's link to the move is established in mainstream financial reporting (not speculation).
+- If used, state it plainly: "The Nov 5 US election..." or "The March 2020 lockdown..." — no hedging, no invented details. Still never invent the event itself or its date.
+
+PERCENTAGE FORMAT — CRITICAL:
+- Always put each percentage in a direction token so it can be coloured.
+- For a GAIN write __+3.2%__ (double underscore on both sides, plus sign included).
+- For a DROP write --2.7%-- (double hyphen on both sides, NO sign inside).
+- Never leave a percentage without a token, and never write a bare direction like "down 20%": the 20% must be in its token.
+  Correct: "first gained __+12%__ in April, then dropped --18%-- in June."
+- Never combine a token with **bold** — use **bold** only around dates and short key phrases.
+
+- No investment advice, no predictions, no price targets.
+- Whole answer roughly 150-250 words. No preamble, no code fences, no closing remarks — output the headline and body only.`;
+
+const GROQ_MODEL_CHAIN = [
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'qwen/qwen3.8-27b',
+  'allam-2-7b',
+];
+
+const groqCooldowns = new Map<string, number>();
+
+function groqCooldown(status: number, message: string): number {
+  if (/per day|daily|24 ?hour/i.test(message)) {
+    const next = new Date();
+    next.setUTCHours(24, 0, 0, 0);
+    return next.getTime() - Date.now();
+  }
+  if (status === 429) return 60_000;
+  if (status === 400 || status === 404) return 60 * 60_000;
+  return 0;
+}
+
+async function callGroqOnce(model: string, key: string, userPrompt: string): Promise<string> {
+  const body: Record<string, unknown> = {
+    model,
+    temperature: 0.3,
+    max_tokens: model.includes('gpt-oss') ? 1800 : 3000,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: userPrompt },
+    ],
+  };
+  if (model.includes('gpt-oss')) body.reasoning_effort = 'low';
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: env.GROQ_MODEL || 'openai/gpt-oss-120b',
-      temperature: 0.3,
-      max_tokens: 1800,
-      reasoning_effort: 'low',
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: userPrompt },
-      ],
-    }),
+    body: JSON.stringify(body),
   });
 
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(data?.error?.message || `Groq responded with ${response.status}`);
+    const message = data?.error?.message || `Groq responded with ${response.status}`;
+    const err = new Error(message) as Error & { status?: number };
+    err.status = response.status;
+    throw err;
   }
   const content = data?.choices?.[0]?.message?.content;
   if (!content) throw new Error('Groq returned an empty response');
   return content.trim();
+}
+
+async function callGroq(
+  env: Record<string, string>,
+  userPrompt: string,
+): Promise<{ analysis: string; model: string }> {
+  const key = env.GROQ_API_KEY;
+  if (!key) throw new Error('GROQ_API_KEY is not set in .env');
+
+  const preferred = env.GROQ_MODEL?.trim() || GROQ_MODEL_CHAIN[0];
+  const chain = [preferred, ...GROQ_MODEL_CHAIN.filter((m) => m !== preferred)];
+
+  let lastError: Error | null = null;
+  let attempted = 0;
+
+  for (const model of chain) {
+    const until = groqCooldowns.get(model) ?? 0;
+    if (until > Date.now()) continue;
+    attempted++;
+    try {
+      const analysis = await callGroqOnce(model, key, userPrompt);
+      groqCooldowns.delete(model);
+      return { analysis, model };
+    } catch (err) {
+      const e = err as Error & { status?: number };
+      if (e.status === 401 || e.status === 403) throw e;
+      lastError = e;
+      const cooldown = groqCooldown(e.status ?? 0, e.message);
+      if (cooldown > 0) groqCooldowns.set(model, Date.now() + cooldown);
+    }
+  }
+
+  if (attempted === 0) {
+    throw new Error('All Groq models are rate-limited — try again in a minute');
+  }
+  throw lastError ?? new Error('Groq request failed');
 }
 
 async function readBody(req: Connect.IncomingMessage): Promise<any> {
@@ -434,7 +587,7 @@ async function handleExplain(
     return sendJson(res, 400, { error: 'Invalid JSON body' });
   }
 
-  const { seg, path, symbol, name, from, to } = body;
+  const { seg, path, symbol, name, from, to, question } = body;
   if (!ALLOWED_SEGMENTS.has(String(seg))) return sendJson(res, 400, { error: 'Invalid symbol type' });
   if (!path || !/^[A-Za-z0-9._\-/]+$/.test(path) || path.includes('..')) {
     return sendJson(res, 400, { error: 'Invalid symbol' });
@@ -484,15 +637,56 @@ async function handleExplain(
     const stats = computeStats(window, context);
     const series = formatSeries(window);
     const news = await fetchNews(name, symbol, from, to).catch(() => [] as NewsItem[]);
-    const prompt = buildPrompt({ seg, path, symbol, name, from, to }, stats, series, news, period);
-    const analysis = await callGroq(env, prompt);
+    const prompt = buildPrompt({ seg, path, symbol, name, from, to, question }, stats, series, news, period);
+    const { analysis, model } = await callGroq(env, prompt);
 
     sendJson(res, 200, {
       analysis,
       stats,
       news,
-      model: env.GROQ_MODEL || 'openai/gpt-oss-120b',
+      model,
     });
+  } catch (err) {
+    sendJson(res, 502, { error: err instanceof Error ? err.message : 'Request failed' });
+  }
+}
+
+async function handleNews(
+  req: Connect.IncomingMessage,
+  res: Connect.ServerResponse,
+  env: Record<string, string>,
+) {
+  let body: { seg: string; path: string; symbol: string; name: string; ranges: { from: number; to: number }[] };
+  try {
+    body = await readBody(req);
+  } catch {
+    return sendJson(res, 400, { error: 'Invalid JSON body' });
+  }
+
+  const { seg, path, symbol, name, ranges } = body;
+  if (!ALLOWED_SEGMENTS.has(String(seg))) return sendJson(res, 400, { error: 'Invalid symbol type' });
+  if (!path || !/^[A-Za-z0-9._\-/]+$/.test(path) || path.includes('..')) {
+    return sendJson(res, 400, { error: 'Invalid symbol' });
+  }
+  if (!Array.isArray(ranges) || ranges.length === 0 || ranges.length > 10) {
+    return sendJson(res, 400, { error: 'Invalid ranges (1-10 required)' });
+  }
+
+  for (const r of ranges) {
+    if (typeof r.from !== 'number' || typeof r.to !== 'number' || !Number.isFinite(r.from) || !Number.isFinite(r.to) || r.from >= r.to) {
+      return sendJson(res, 400, { error: 'Invalid range' });
+    }
+  }
+
+  try {
+    const results = await Promise.allSettled(
+      ranges.map((r) => fetchNews(name, symbol, r.from, r.to).catch(() => [] as NewsItem[])),
+    );
+    const newsByRange = results.map((r, i) => ({
+      range: ranges[i],
+      news: r.status === 'fulfilled' ? r.value : [],
+    }));
+    sendJson(res, 200, { newsByRange });
   } catch (err) {
     sendJson(res, 502, { error: err instanceof Error ? err.message : 'Request failed' });
   }
@@ -506,6 +700,10 @@ function stockApiPlugin(env: Record<string, string>): Plugin {
         if (!req.url?.startsWith('/api/')) return next();
         if (req.url.startsWith('/api/explain') && req.method === 'POST') {
           void handleExplain(req, res, env);
+          return;
+        }
+        if (req.url.startsWith('/api/news') && req.method === 'POST') {
+          void handleNews(req, res, env);
           return;
         }
         void handleReadOnly(req, res, env);

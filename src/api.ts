@@ -50,6 +50,8 @@ export function fetchChart(quote: Quote, range: RangeKey): Promise<ChartData> {
 
 export type ResolutionInterval = '15min' | 'daily';
 
+export type DetailSegment = { from: number; to: number; candles: Candle[]; interval: ResolutionInterval };
+
 export function fetchResolution(
   quote: Quote,
   from: number,
@@ -93,6 +95,11 @@ export type ExplainResult = {
   model: string;
 };
 
+export type NewsMarker = {
+  time: number;
+  news: NewsItem[];
+};
+
 export async function explainRange(payload: {
   seg: string;
   path: string;
@@ -100,6 +107,7 @@ export async function explainRange(payload: {
   name: string;
   from: number;
   to: number;
+  question?: string;
 }): Promise<ExplainResult> {
   const res = await fetch('/api/explain', {
     method: 'POST',
@@ -111,4 +119,23 @@ export async function explainRange(payload: {
     throw new Error((body as { error?: string }).error || `Request failed (${res.status})`);
   }
   return body as ExplainResult;
+}
+
+export async function fetchNewsForMoves(
+  seg: string,
+  path: string,
+  symbol: string,
+  name: string,
+  ranges: { from: number; to: number }[],
+): Promise<{ range: { from: number; to: number }; news: NewsItem[] }[]> {
+  const res = await fetch('/api/news', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seg, path, symbol, name, ranges }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error((body as { error?: string }).error || `Request failed (${res.status})`);
+  }
+  return body.newsByRange;
 }

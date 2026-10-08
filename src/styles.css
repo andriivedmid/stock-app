@@ -339,6 +339,34 @@ body {
   color: var(--muted);
 }
 
+.explain-question {
+  flex: 1;
+  min-width: 200px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.explain-question:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(76, 154, 255, 0.15);
+}
+
+.explain-question::placeholder {
+  color: var(--muted);
+}
+
+.explain-question:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .selection-bar .mode-off {
   margin-left: auto;
 }
@@ -427,6 +455,14 @@ body {
 
 .analysis-body p {
   margin: 0 0 10px;
+}
+
+.analysis-headline {
+  margin: 2px 0 12px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #fff;
 }
 
 .analysis-body p:last-child {
@@ -764,11 +800,194 @@ body {
   }
 }
 
+.news-markers-list {
+  margin-top: 16px;
+  padding: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.news-markers-list h4 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.news-markers-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.news-markers-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: var(--panel-2);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+.news-marker-date {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.news-markers-list li ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.news-markers-list li li a {
+  text-decoration: none;
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.15s;
+}
+
+.news-markers-list li li a:hover {
+  background: #21262d;
+}
+
+.news-marker-source {
+  font-size: 10px;
+  font-weight: 600;
+  color: #f9a825;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.news-marker-title {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .footer {
   text-align: center;
   font-size: 12px;
   color: var(--muted);
   padding: 18px 0 6px;
+}
+
+.news-marker-wrapper {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.news-marker-wrapper:hover {
+  pointer-events: auto;
+}
+
+.news-dot-marker {
+  position: absolute;
+  top: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f9a825;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+  cursor: help;
+  transform: translateX(-50%);
+}
+
+.news-dot-tooltip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 8px;
+  min-width: 280px;
+  max-width: 380px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 8px;
+  z-index: 20;
+  pointer-events: auto;
+  animation: fadeIn 0.15s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.news-tooltip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.news-link {
+  display: block;
+  text-decoration: none;
+  color: #e6edf3;
+  padding: 6px 8px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  transition: background 0.15s;
+}
+
+.news-link:last-child {
+  margin-bottom: 0;
+}
+
+.news-link:hover {
+  background: #21262d;
+}
+
+.news-source {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: #f9a825;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-right: 8px;
+}
+
+.news-title {
+  font-size: 12.5px;
+  line-height: 1.4;
+  font-weight: 500;
+}
+
+.news-date {
+  display: block;
+  font-size: 10px;
+  color: #8b949e;
+  margin-top: 2px;
 }
 
 @media (max-width: 820px) {
