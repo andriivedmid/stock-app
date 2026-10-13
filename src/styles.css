@@ -294,6 +294,223 @@ body {
   align-items: center;
 }
 
+.end-date-group {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 3px;
+  transition: border-color 0.15s ease;
+}
+
+.end-date-group:focus-within {
+  border-color: var(--accent);
+}
+
+.end-date-group.disabled {
+  opacity: 0.4;
+}
+
+.end-date-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 4px 0 8px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.date-picker {
+  position: relative;
+}
+
+.date-picker-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-family: inherit;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+
+.date-picker-trigger:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.date-picker-trigger:disabled {
+  cursor: not-allowed;
+}
+
+.date-picker-icon {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.date-picker-text {
+  width: 92px;
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+}
+
+.date-picker-text.empty {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.clear-date-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.clear-date-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.date-picker-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 50;
+  width: 248px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.date-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.date-picker-month {
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.date-picker-nav {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.date-picker-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.date-picker-nav:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.date-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.date-picker-weekday {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  padding-bottom: 4px;
+  user-select: none;
+}
+
+.date-picker-day {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.15s ease;
+}
+
+.date-picker-day:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.date-picker-day.disabled {
+  color: var(--muted);
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.date-picker-day.selected {
+  background: rgba(76, 154, 255, 0.22);
+  color: var(--accent);
+  font-weight: 700;
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.date-picker-day.today {
+  color: var(--accent);
+}
+
+.date-picker-day.selected.today {
+  color: var(--accent);
+}
+
+.end-date-load.hidden,
+.clear-date-btn.hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.end-date-load {
+  border: none;
+  background: rgba(76, 154, 255, 0.18);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: stretch;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.end-date-load:hover {
+  background: rgba(76, 154, 255, 0.3);
+}
+
 .controls .select-toggle {
   border: 1px solid var(--border) !important;
   background: var(--panel-2) !important;
@@ -472,16 +689,6 @@ body {
 .analysis-body strong {
   color: #fff;
   font-weight: 600;
-}
-
-.analysis-body strong .up,
-.analysis-body .up {
-  color: var(--green);
-}
-
-.analysis-body strong .down,
-.analysis-body .down {
-  color: var(--red);
 }
 
 .analysis-body ul {

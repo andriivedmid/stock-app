@@ -83,7 +83,7 @@ export function SearchBar({ onSelect, selected }: Props) {
       <input
         className="search-input"
         type="text"
-        placeholder="Search stocks, e.g. AAPL, Apple, Tesla…"
+        placeholder="Search stocks, e.g. AAPL, Apple, Nvidia…"
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onKeyDown={onKeyDown}

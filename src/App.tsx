@@ -16,6 +16,7 @@ import {
   type Selection,
 } from './api';
 import { SearchBar } from './SearchBar';
+import { DatePicker } from './DatePicker';
 import { StockChart, type ChartType } from './StockChart';
 
 const DEFAULT_QUOTE: Quote = {
@@ -52,56 +53,6 @@ function fmtVolume(volume: number): string {
   return String(volume);
 }
 
-const PCT_TOKEN = /([+\-−‐‑]?\s*\d+(?:\.\d+)?\s*%)/g;
-const DIR_TOKEN = /__[^_]*\d+(?:\.\d+)?\s*%[^_]*__|--[^\-]*\d+(?:\.\d+)?\s*%[^\-]*--/g;
-
-function colorizeSigns(text: string): React.ReactNode[] {
-  return text.split(PCT_TOKEN).map((part, idx) => {
-    if (!part) return null;
-    const m = /^\s*([+\-−‐‑]?)\s*(\d+(?:\.\d+)?)\s*%$/.exec(part);
-    if (!m) return <Fragment key={idx}>{part}</Fragment>;
-    const sign = m[1];
-    if (!sign) return <Fragment key={idx}>{part}</Fragment>;
-    const negative = sign === '-' || sign === '−' || sign === '‐' || sign === '‑';
-    return (
-      <span key={idx} className={negative ? 'down' : 'up'}>
-        {part}
-      </span>
-    );
-  });
-}
-
-function colorizePercents(text: string): React.ReactNode[] {
-  const out: React.ReactNode[] = [];
-  let key = 0;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  DIR_TOKEN.lastIndex = 0;
-  while ((m = DIR_TOKEN.exec(text))) {
-    const before = text.slice(last, m.index);
-    if (before) out.push(<Fragment key={key++}>{colorizeSigns(before)}</Fragment>);
-    const tok = m[0];
-    if (tok.startsWith('--')) {
-      out.push(
-        <span key={key++} className="down">
-          {tok.slice(2, -2)}
-        </span>,
-      );
-    } else {
-      out.push(
-        <span key={key++} className="up">
-          {tok.slice(2, -2)}
-        </span>,
-      );
-    }
-    last = m.index + tok.length;
-  }
-  if (last < text.length) {
-    out.push(<Fragment key={key++}>{colorizeSigns(text.slice(last))}</Fragment>);
-  }
-  return out;
-}
-
 function renderInline(text: string): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   const parts = text.split(/(\*\*[^*]+\*\*)/g);
@@ -109,139 +60,157 @@ function renderInline(text: string): React.ReactNode[] {
     const part = parts[idx];
     if (!part) continue;
     if (part.startsWith('**') && part.endsWith('**')) {
-      out.push(<strong key={idx}>{colorizePercents(part.slice(2, -2))}</strong>);
+      out.push(<strong key={idx}>{part.slice(2, -2)}</strong>);
     } else {
-      out.push(<Fragment key={idx}>{colorizePercents(part)}</Fragment>);
+      // Bold signed percentages (+X% or -X%) without color
+      const pctParts = part.split(/([+\-]\d+(?:\.\d+)?\s*%)/g);
+      for (let i = 0; i < pctParts.length; i++) {
+        const p = pctParts[i];
+        if (!p) continue;
+        if (/^[+\-]\d+(?:\.\d+)?\s*%$/.test(p)) {
+          out.push(<strong key={`${idx}-${i}`}>{p}</strong>);
+        } else {
+          out.push(<Fragment key={`${idx}-${i}`}>{p}</Fragment>);
+        }
+      }
     }
   }
   return out;
 }
 
+const RANGE_NEWS_COUNT: Record<RangeKey, number> = {
+  '1D': 3,
+  '5D': 3,
+  '1M': 3,
+  '3M': 3,
+  '6M': 3,
+  '1Y': 3,
+  '5Y': 5,
+  'MAX': 10,
+};
+
+const RANGE_MODE: Record<RangeKey, 'day' | 'week' | 'month'> = {
+  '1D': 'day',
+  '5D': 'day',
+  '1M': 'day',
+  '3M': 'day',
+  '6M': 'day',
+  '1Y': 'week',
+  '5Y': 'month',
+  'MAX': 'month',
+};
+
 function findBiggestMoves(candles: Candle[], range: RangeKey): { from: number; to: number }[] {
   if (candles.length < 2) return [];
 
-  const moves: { from: number; to: number; pct: number; type: 'day' | 'week' }[] = [];
+  const targetCount = Math.min(RANGE_NEWS_COUNT[range] ?? 3, 10);
+  const mode = RANGE_MODE[range] ?? 'month';
 
-  // 1-day moves
-  for (let i = 1; i < candles.length; i++) {
-    const prev = candles[i - 1];
-    const curr = candles[i];
-    const pct = ((curr.close - prev.close) / prev.close) * 100;
-    if (Math.abs(pct) >= 3) {
-      moves.push({ from: prev.time, to: curr.time, pct, type: 'day' });
+  // Build candidate moves in the range's mode.
+  const candidates: { from: number; to: number; pct: number; monthKey: string }[] = [];
+
+  if (mode === 'day') {
+    // Single-day events: the biggest single-day price moves.
+    for (let i = 1; i < candles.length; i++) {
+      const prev = candles[i - 1];
+      const curr = candles[i];
+      if (prev.close === 0) continue;
+      const pct = ((curr.close - prev.close) / prev.close) * 100;
+      const d = new Date(curr.time * 1000);
+      candidates.push({ from: curr.time, to: curr.time, pct, monthKey: `${d.getUTCFullYear()}-${d.getUTCMonth()}` });
     }
-  }
-
-  // 5-day (week) moves
-  for (let i = 5; i < candles.length; i++) {
-    const prev = candles[i - 5];
-    const curr = candles[i];
-    const pct = ((curr.close - prev.close) / prev.close) * 100;
-    if (Math.abs(pct) >= 5) {
-      moves.push({ from: prev.time, to: curr.time, pct, type: 'week' });
+  } else if (mode === 'week') {
+    // Single-week events: the biggest 5-trading-day windows.
+    for (let i = 5; i < candles.length; i++) {
+      const prev = candles[i - 5];
+      const curr = candles[i];
+      if (prev.close === 0) continue;
+      const pct = ((curr.close - prev.close) / prev.close) * 100;
+      const d = new Date(curr.time * 1000);
+      candidates.push({ from: candles[i - 4].time, to: curr.time, pct, monthKey: `${d.getUTCFullYear()}-${d.getUTCMonth()}` });
     }
-  }
-
-  moves.sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
-
-  if (range !== 'MAX') {
-    let minTotal: number;
-    if (range === '1Y') minTotal = 3;
-    else if (range === '5Y') minTotal = 5;
-    else minTotal = 3;
-
-    const byYear = new Map<number, { from: number; to: number; pct: number; type: 'day' | 'week' }>();
-    for (const m of moves) {
-      const year = new Date(m.from * 1000).getUTCFullYear();
-      const existing = byYear.get(year);
-      if (!existing || Math.abs(m.pct) > Math.abs(existing.pct)) {
-        byYear.set(year, m);
+  } else {
+    // Month mode: month-over-month changes with exact calendar-month ranges.
+    const monthMap = new Map<string, { lastClose: number; lastTime: number; year: number; month: number }>();
+    for (const c of candles) {
+      const d = new Date(c.time * 1000);
+      const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      const existing = monthMap.get(key);
+      if (!existing || c.time > existing.lastTime) {
+        monthMap.set(key, { lastClose: c.close, lastTime: c.time, year: d.getUTCFullYear(), month: d.getUTCMonth() });
       }
     }
-
-    const selectedYears = Array.from(byYear.keys()).sort((a, b) => a - b);
-    const firstYear = selectedYears[0] ?? new Date().getUTCFullYear();
-    const lastYear = selectedYears[selectedYears.length - 1] ?? firstYear;
-
-    const yearBlocks: number[] = [];
-    for (let y = firstYear; y <= lastYear; y++) {
-      yearBlocks.push(y);
+    const months = Array.from(monthMap.values()).sort((a, b) => a.lastTime - b.lastTime);
+    for (let i = 1; i < months.length; i++) {
+      const prev = months[i - 1];
+      const curr = months[i];
+      if (prev.lastClose === 0) continue;
+      const pct = ((curr.lastClose - prev.lastClose) / prev.lastClose) * 100;
+      const from = Math.floor(Date.UTC(curr.year, curr.month, 1) / 1000);
+      const to = Math.floor(Date.UTC(curr.year, curr.month + 1, 1) / 1000) - 1;
+      candidates.push({ from, to, pct, monthKey: `${curr.year}-${curr.month}` });
     }
+  }
 
-    const selectedMoves: { from: number; to: number; pct: number; type: 'day' | 'week' }[] = [];
-    for (const blockStart of yearBlocks) {
-      let bestInBlock: typeof moves[0] | null = null;
-      for (const m of moves) {
+  // Keep the single biggest move per calendar month so dots never cluster.
+  const bestPerMonth = new Map<string, { from: number; to: number; pct: number }>();
+  for (const m of candidates) {
+    const existing = bestPerMonth.get(m.monthKey);
+    if (!existing || Math.abs(m.pct) > Math.abs(existing.pct)) {
+      bestPerMonth.set(m.monthKey, { from: m.from, to: m.to, pct: m.pct });
+    }
+  }
+  const perMonth = Array.from(bestPerMonth.values());
+
+  if (range === 'MAX') {
+    // Guarantee a story every 5 years, then fill the remainder with the biggest moves.
+    const years = perMonth.map((m) => new Date(m.from * 1000).getUTCFullYear());
+    const firstYear = Math.min(...years);
+    const lastYear = Math.max(...years);
+    const selected: { from: number; to: number; pct: number }[] = [];
+    const used = new Set<string>();
+
+    for (let y = firstYear; y <= lastYear; y += 5) {
+      const blockEnd = y + 4;
+      let best: { from: number; to: number; pct: number } | null = null;
+      let bestKey = '';
+      for (const m of perMonth) {
         const year = new Date(m.from * 1000).getUTCFullYear();
-        if (year === blockStart) {
-          if (!bestInBlock || Math.abs(m.pct) > Math.abs(bestInBlock.pct)) {
-            bestInBlock = m;
+        if (year >= y && year <= blockEnd) {
+          const d = new Date(m.from * 1000);
+          const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+          if (used.has(key)) continue;
+          if (!best || Math.abs(m.pct) > Math.abs(best.pct)) {
+            best = m;
+            bestKey = key;
           }
         }
       }
-      if (bestInBlock) selectedMoves.push(bestInBlock);
-    }
-
-    if (selectedMoves.length < minTotal) {
-      for (const m of moves) {
-        if (!selectedMoves.some(s => s.from === m.from)) {
-          selectedMoves.push(m);
-          if (selectedMoves.length >= minTotal) break;
-        }
+      if (best) {
+        selected.push(best);
+        used.add(bestKey);
       }
     }
 
-    const selected = selectedMoves
-      .sort((a, b) => a.from - b.from)
-      .slice(0, 10);
-
-    return selected.map((m) => ({
-      from: m.from - 2 * 86400,
-      to: m.to + 2 * 86400,
-    }));
-  }
-
-// MAX range: exactly one biggest move per 5-year block
-  const firstTime = candles[0].time;
-  const lastTime = candles[candles.length - 1].time;
-  const firstYear = new Date(firstTime * 1000).getUTCFullYear();
-  const lastYear = new Date(lastTime * 1000).getUTCFullYear();
-
-  // Build 5-year blocks covering entire data range
-  const fiveYearBlocks: number[] = [];
-  for (let y = firstYear; y <= lastYear; y += 5) {
-    fiveYearBlocks.push(y);
-  }
-
-  // Pick the single biggest move from each block
-  const selected: typeof moves = [];
-
-  for (const blockStart of fiveYearBlocks) {
-    const blockEnd = Math.min(blockStart + 4, lastYear);
-    let bestInBlock: typeof moves[0] | null = null;
-    for (const m of moves) {
-      const year = new Date(m.from * 1000).getUTCFullYear();
-      if (year >= blockStart && year <= blockEnd) {
-        if (!bestInBlock || Math.abs(m.pct) > Math.abs(bestInBlock.pct)) {
-          bestInBlock = m;
-        }
-      }
+    const sorted = [...perMonth].sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+    for (const m of sorted) {
+      if (selected.length >= targetCount) break;
+      const d = new Date(m.from * 1000);
+      const key = `${d.getUTCFullYear()}-${d.getUTCMonth()}`;
+      if (used.has(key)) continue;
+      selected.push(m);
+      used.add(key);
     }
-    if (bestInBlock) {
-      console.log('[MAX] Block', blockStart, '-', blockEnd, 'selected:', bestInBlock.from, 'year:', new Date(bestInBlock.from * 1000).getUTCFullYear(), 'pct:', bestInBlock.pct);
-      selected.push(bestInBlock);
-    }
+
+    selected.sort((a, b) => a.from - b.from);
+    return selected.slice(0, 10).map((m) => ({ from: m.from, to: m.to }));
   }
 
-  // Sort by magnitude (biggest first), cap at 10 for UI
-  const final = selected
-    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))
-    .slice(0, 10);
-
-  return final.map((m) => ({
-    from: m.from - 2 * 86400,
-    to: m.to + 2 * 86400,
-  }));
+  // Other ranges: biggest moves across distinct months.
+  const perMonthSorted = [...perMonth].sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct));
+  const selected = perMonthSorted.slice(0, targetCount);
+  selected.sort((a, b) => a.from - b.from);
+  return selected.map((m) => ({ from: m.from, to: m.to }));
 }
 
 function renderAnalysis(text: string) {
@@ -276,6 +245,8 @@ function renderAnalysis(text: string) {
 export function App() {
   const [quote, setQuote] = useState<Quote>(DEFAULT_QUOTE);
   const [range, setRange] = useState<RangeKey>('1Y');
+  const [endDateInput, setEndDateInput] = useState<string>('');
+  const [endDate, setEndDate] = useState<string>('');
   const [chartType, setChartType] = useState<ChartType>('candle');
   const [data, setData] = useState<ChartData | null>(null);
   const [status, setStatus] = useState<Status>('loading');
@@ -298,7 +269,7 @@ export function App() {
     setSegments([]);
     setResolving(false);
     setResolutionError(null);
-    fetchChart(quote, range)
+    fetchChart(quote, range, endDate)
       .then((res) => {
         if (cancelled) return;
         setData(res);
@@ -330,7 +301,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [quote, range]);
+  }, [quote, range, endDate]);
 
   const onSelect = useCallback((next: Quote) => setQuote(next), []);
 
@@ -447,6 +418,39 @@ export function App() {
                       {r}
                     </button>
                   ))}
+                </div>
+                <div className={`end-date-group ${range === 'MAX' ? 'disabled' : ''}`}>
+                  <span className="end-date-label" aria-hidden="true">End on</span>
+                  <DatePicker
+                    value={endDateInput}
+                    min="1900-01-01"
+                    max={new Date().toISOString().slice(0, 10)}
+                    disabled={range === 'MAX'}
+                    onChange={setEndDateInput}
+                  />
+                  <button
+                    type="button"
+                    className={`end-date-load ${endDateInput && range !== 'MAX' ? '' : 'hidden'}`}
+                    onClick={() => {
+                      setEndDate(endDateInput);
+                      setSelection(null);
+                      setExplain({ status: 'idle' });
+                    }}
+                    title="Load the graph ending on this date"
+                  >
+                    Load
+                  </button>
+                  <button
+                    type="button"
+                    className={`clear-date-btn ${(endDateInput || endDate) && range !== 'MAX' ? '' : 'hidden'}`}
+                    onClick={() => {
+                      setEndDate('');
+                      setEndDateInput('');
+                    }}
+                    title="Clear end date"
+                  >
+                    ✕
+                  </button>
                 </div>
                 <button
                   className={`select-toggle ${selectionMode ? 'active' : ''}`}

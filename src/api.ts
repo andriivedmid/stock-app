@@ -43,8 +43,9 @@ export function searchSymbols(query: string): Promise<{ quotes: Quote[] }> {
   return getJson(`/api/search?q=${encodeURIComponent(query)}`);
 }
 
-export function fetchChart(quote: Quote, range: RangeKey): Promise<ChartData> {
+export function fetchChart(quote: Quote, range: RangeKey, end?: string): Promise<ChartData> {
   const params = new URLSearchParams({ seg: quote.seg, path: quote.path, range });
+  if (end && range !== 'MAX') params.set('end', end);
   return getJson(`/api/chart?${params.toString()}`);
 }
 

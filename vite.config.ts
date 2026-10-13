@@ -9,15 +9,15 @@ const SA_HEADERS = {
 
 const RANGE_FETCH: Record<
   string,
-  { range: string; period: string; trimDays?: number; keepLast?: number }
+  { range: string; period: string; trimDays?: number; keepLast?: number; days?: number }
 > = {
-  '1D': { range: '3M', period: 'Daily', keepLast: 1 },
-  '5D': { range: '3M', period: 'Daily', keepLast: 5 },
-  '1M': { range: '3M', period: 'Daily', trimDays: 31 },
-  '3M': { range: '3M', period: 'Daily' },
-  '6M': { range: '6M', period: 'Daily' },
-  '1Y': { range: '1Y', period: 'Daily' },
-  '5Y': { range: '5Y', period: 'Daily' },
+  '1D': { range: '3M', period: 'Daily', keepLast: 1, days: 1 },
+  '5D': { range: '3M', period: 'Daily', keepLast: 5, days: 5 },
+  '1M': { range: '3M', period: 'Daily', trimDays: 31, days: 31 },
+  '3M': { range: '3M', period: 'Daily', days: 92 },
+  '6M': { range: '6M', period: 'Daily', days: 183 },
+  '1Y': { range: '1Y', period: 'Daily', days: 366 },
+  '5Y': { range: '5Y', period: 'Daily', days: 1827 },
   MAX: { range: '10Y', period: 'Monthly' },
 };
 
@@ -453,14 +453,15 @@ const SYSTEM_PROMPT = `You are a markets analyst explaining a highlighted period
 
 OUTPUT STRUCTURE:
 1. Headline title — one markdown H1 line that names the stock, the direction of the move, and the main driver, in plain English. Example: "# Apple stock falls on pandemic worries". Exactly one line, no trailing period.
-2. Body made mostly of bullet points (3-6), one bullet per distinct driver or move phase. Use short paragraphs only where a bullet does not fit.
+2. Company snapshot — a short paragraph (3-4 sentences) summarizing the company: what it does and its rough global size/scale (e.g., "one of the world's largest companies", "multi-billion dollar revenue"). Describe scale qualitatively — DO NOT invent specific revenue, net-income, profit-margin, market-cap, or other figures. Only cite a specific number if you are highly confident it is a correct, widely known public figure. Never say the figures are unavailable or not in the data set. End with a one-sentence "vibe" assessment (e.g., "A high-margin, cash-generating machine facing slowing iPhone growth").
+3. Body made mostly of bullet points (3-6), one bullet per distinct driver or move phase. Use short paragraphs only where a bullet does not fit.
 
 RULES:
 - Explain WHY more than WHAT: keep recital of raw price moves brief and secondary. Spend most of the answer on the CAUSES — the events, catalysts, and market backdrops that drove the move, tied to specific dates.
 - If the period contains MULTIPLE moves, especially in different directions (up AND down at different times), cover EACH move in its OWN bullet point or paragraph, with its own dates, its own approximate size, and its own cause.
 - Break the drivers into separate bullet points rather than merging them — the more distinct the reason, the more distinct the bullet.
 - When the cause is not visible in the headlines, say the data does not show a single cause and give the most plausible data-supported explanations (e.g. momentum, mean reversion, sector rotation).
-- Use ONLY the price data and headlines provided. Never invent events, earnings dates, or figures.
+- Use ONLY the price data and headlines provided. Never invent events, earnings dates, or figures. (This data restriction applies to the price-move analysis. The company snapshot may use your own general knowledge — it is joined as "you are a markets analyst" anyway.)
 - Attribute moves to headlines only when the timing clearly lines up.
 - Consider volume where it is notable: volume far above the period or prior average confirms a move's conviction; mention it only when it stands out, tied to a specific date.
 
@@ -472,15 +473,16 @@ MACRO EVENT EXCEPTION (narrow, verifiable only):
 - If used, state it plainly: "The Nov 5 US election..." or "The March 2020 lockdown..." — no hedging, no invented details. Still never invent the event itself or its date.
 
 PERCENTAGE FORMAT — CRITICAL:
-- Always put each percentage in a direction token so it can be coloured.
-- For a GAIN write __+3.2%__ (double underscore on both sides, plus sign included).
-- For a DROP write --2.7%-- (double hyphen on both sides, NO sign inside).
-- Never leave a percentage without a token, and never write a bare direction like "down 20%": the 20% must be in its token.
-  Correct: "first gained __+12%__ in April, then dropped --18%-- in June."
-- Never combine a token with **bold** — use **bold** only around dates and short key phrases.
+- Always write percentages with an explicit sign: +3.2% for gains, -2.7% for drops.
+- Never write bare percentages without a sign, and never write "down 20%" — write -20% instead.
+  Correct: "first gained +12% in April, then dropped -18% in June."
+- The system will automatically bold all percentages; do not add **bold** around them.
+
+USER QUESTION:
+- If a user question is provided at the end of the prompt, address it directly in a short final paragraph after the bullet points. Keep it concise (2-3 sentences).
 
 - No investment advice, no predictions, no price targets.
-- Whole answer roughly 150-250 words. No preamble, no code fences, no closing remarks — output the headline and body only.`;
+- Whole answer roughly 200-300 words. No preamble, no code fences, no closing remarks — output the headline, company snapshot, and body only.`;
 
 const GROQ_MODEL_CHAIN = [
   'openai/gpt-oss-120b',
@@ -512,7 +514,7 @@ async function callGroqOnce(model: string, key: string, userPrompt: string): Pro
       { role: 'user', content: userPrompt },
     ],
   };
-  if (model.includes('gpt-oss')) body.reasoning_effort = 'low';
+  if (model.includes('gpt-oss')) body.reasoning_effort = 'medium';
 
   const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -717,9 +719,28 @@ function sendChartResponse(
   q: any,
   candles: Candle[],
   fallbackSymbol: string,
+  historical = false,
 ) {
+  if (candles.length === 0) {
+    sendJson(res, 404, { error: 'No price data for that period' });
+    return;
+  }
   const last = candles[candles.length - 1];
   const prev = candles[candles.length - 2];
+  if (historical) {
+    const change = prev ? last.close - prev.close : 0;
+    sendJson(res, 200, {
+      symbol: q?.symbol || fallbackSymbol,
+      exchange: q?.ex || '',
+      marketState: '',
+      price: last.close,
+      change,
+      changePct: prev && prev.close !== 0 ? (change / prev.close) * 100 : 0,
+      previousClose: prev?.close ?? last.close,
+      candles,
+    });
+    return;
+  }
   sendJson(res, 200, {
     symbol: q?.symbol || fallbackSymbol,
     exchange: q?.ex || '',
@@ -815,21 +836,67 @@ async function handleReadOnly(
       const fetchSpec = RANGE_FETCH[range];
       if (!fetchSpec) return sendJson(res, 400, { error: 'Invalid range' });
 
+      const endParam = url.searchParams.get('end');
+      const endDate = endParam && /^\d{4}-\d{2}-\d{2}$/.test(endParam) ? endParam : null;
+      const isHistorical = range !== 'MAX' && endDate !== null;
+
       let candles: Candle[] | null = null;
-      if (env.TWELVE_DATA_API_KEY && (range === '1D' || range === '5D' || range === 'MAX')) {
+      if (env.TWELVE_DATA_API_KEY && (isHistorical || range === '1D' || range === '5D' || range === 'MAX')) {
         try {
-          candles =
-            range === '1D'
-              ? dedupeToDays(
-                  keepRTH(await twelveTimeSeries(path, '5min', 300, env.TWELVE_DATA_API_KEY)),
+          if (isHistorical) {
+            const endEpoch = exchangeDateToEpoch(endDate!);
+            const startEpoch = endEpoch - (fetchSpec.days ?? 31) * DAY;
+            if (range === '1D') {
+              try {
+                const bars = await twelveTimeSeries(path, '5min', 300, env.TWELVE_DATA_API_KEY, {
+                  from: startEpoch,
+                  to: endEpoch + DAY,
+                });
+                candles = keepRTH(bars);
+              } catch {
+                candles = dedupeToDays(
+                  await twelveTimeSeries(
+                    path,
+                    '1day',
+                    Math.min(5000, (fetchSpec.days ?? 1) + 10),
+                    env.TWELVE_DATA_API_KEY,
+                    { from: startEpoch, to: endEpoch + DAY },
+                  ),
                   1,
-                )
-              : range === '5D'
-                ? dedupeToDays(
-                    keepRTH(await twelveTimeSeries(path, '15min', 500, env.TWELVE_DATA_API_KEY)),
-                    5,
-                  )
-                : await twelveTimeSeries(path, '1month', 1000, env.TWELVE_DATA_API_KEY);
+                );
+              }
+            } else if (range === '5D' && endEpoch > Date.now() / 1000 - 730 * DAY) {
+              candles = dedupeToDays(
+                keepRTH(
+                  await twelveTimeSeries(path, '15min', 500, env.TWELVE_DATA_API_KEY, {
+                    from: startEpoch,
+                    to: endEpoch + DAY,
+                  }),
+                ),
+                5,
+              );
+            } else {
+              candles = await twelveTimeSeries(
+                path,
+                '1day',
+                Math.min(5000, (fetchSpec.days ?? 31) + 10),
+                env.TWELVE_DATA_API_KEY,
+                { from: startEpoch, to: endEpoch + DAY },
+              );
+            }
+          } else if (range === '1D') {
+            candles = dedupeToDays(
+              keepRTH(await twelveTimeSeries(path, '5min', 300, env.TWELVE_DATA_API_KEY)),
+              1,
+            );
+          } else if (range === '5D') {
+            candles = dedupeToDays(
+              keepRTH(await twelveTimeSeries(path, '15min', 500, env.TWELVE_DATA_API_KEY)),
+              5,
+            );
+          } else {
+            candles = await twelveTimeSeries(path, '1month', 1000, env.TWELVE_DATA_API_KEY);
+          }
         } catch {
           candles = null;
         }
@@ -843,17 +910,20 @@ async function handleReadOnly(
       if (candles === null) {
         if (history.status === 'rejected') throw history.reason;
         candles = parseHistory(history.value);
-        if (fetchSpec.trimDays) {
+        if (isHistorical) {
+          const endEpoch = exchangeDateToEpoch(endDate!);
+          const startEpoch = endEpoch - (fetchSpec.days ?? 31) * DAY;
+          candles = candles.filter((c) => c.time >= startEpoch && c.time <= endEpoch);
+        } else if (fetchSpec.trimDays) {
           const cutoff = Date.now() / 1000 - fetchSpec.trimDays * DAY;
           candles = candles.filter((c) => c.time >= cutoff);
-        }
-        if (fetchSpec.keepLast) {
+        } else if (fetchSpec.keepLast) {
           candles = candles.slice(-fetchSpec.keepLast);
         }
       }
 
       const q = quote.status === 'fulfilled' ? quote.value?.data : null;
-      return sendChartResponse(res, q, candles, path.split('/').pop());
+      return sendChartResponse(res, q, candles, path.split('/').pop(), isHistorical);
     }
 
     sendJson(res, 404, { error: 'Not found' });
